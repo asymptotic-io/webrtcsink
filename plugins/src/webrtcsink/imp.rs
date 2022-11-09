@@ -58,7 +58,7 @@ const DEFAULT_START_BITRATE: u32 = 2048000;
 struct Settings {
     video_caps: gst::Caps,
     audio_caps: gst::Caps,
-    turn_server: Option<String>,
+    turn_servers: gst::Array,
     stun_server: Option<String>,
     cc_heuristic: WebRTCSinkCongestionControl,
     min_bitrate: u32,
@@ -268,7 +268,7 @@ impl Default for Settings {
                 .collect::<gst::Caps>(),
             cc_heuristic: WebRTCSinkCongestionControl::Homegrown,
             stun_server: DEFAULT_STUN_SERVER.map(String::from),
-            turn_server: None,
+            turn_servers: gst::Array::new(Vec::new() as Vec<glib::SendValue>),
             min_bitrate: DEFAULT_MIN_BITRATE,
             max_bitrate: DEFAULT_MAX_BITRATE,
             start_bitrate: DEFAULT_START_BITRATE,
@@ -1680,8 +1680,8 @@ impl WebRTCSink {
             webrtcbin.set_property("stun-server", stun_server);
         }
 
-        if let Some(turn_server) = settings.turn_server.as_ref() {
-            webrtcbin.set_property("turn-server", turn_server);
+        for turn_server in settings.turn_servers.iter() {
+            webrtcbin.emit_by_name::<bool>("add-turn-server", &[&turn_server]);
         }
 
         pipeline.add(&webrtcbin).unwrap();
@@ -2480,11 +2480,17 @@ impl ObjectImpl for WebRTCSink {
                     DEFAULT_STUN_SERVER,
                     glib::ParamFlags::READWRITE,
                 ),
-                glib::ParamSpecString::new(
-                    "turn-server",
-                    "TURN Server",
-                    "The TURN server of the form turn(s)://username:password@host:port.",
-                    None,
+                gst::ParamSpecArray::new(
+                    "turn-servers",
+                    "List of TURN Servers to user",
+                    "The TURN servers of the form < turn(s)://username:password@host:port, turn(s)://usename1:password1@host1:port1 >",
+                    Some(&glib::ParamSpecString::new(
+                        "turn-server",
+                        "TURN Server",
+                        "The TURN server of the form turn(s)://username:password@host:port.",
+                        None,
+                        glib::ParamFlags::READWRITE,
+                    )),
                     glib::ParamFlags::READWRITE,
                 ),
                 glib::ParamSpecEnum::new(
@@ -2591,10 +2597,10 @@ impl ObjectImpl for WebRTCSink {
                     .get::<Option<String>>()
                     .expect("type checked upstream")
             }
-            "turn-server" => {
+            "turn-servers" => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.turn_server = value
-                    .get::<Option<String>>()
+                settings.turn_servers = value
+                    .get::<gst::Array>()
                     .expect("type checked upstream")
             }
             "congestion-control" => {
@@ -2683,9 +2689,9 @@ impl ObjectImpl for WebRTCSink {
                 let settings = self.settings.lock().unwrap();
                 settings.stun_server.to_value()
             }
-            "turn-server" => {
+            "turn-servers" => {
                 let settings = self.settings.lock().unwrap();
-                settings.turn_server.to_value()
+                settings.turn_servers.to_value()
             }
             "min-bitrate" => {
                 let settings = self.settings.lock().unwrap();
