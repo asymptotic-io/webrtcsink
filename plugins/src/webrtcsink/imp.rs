@@ -306,13 +306,13 @@ fn make_converter_for_video_caps(caps: &gst::Caps) -> Result<gst::Element, Error
     if let Some(feature) = caps.features(0) {
         if feature.contains(CUDA_MEMORY_FEATURE) {
             return Ok(gst::parse_bin_from_description(
-                "cudaupload ! cudaconvert ! cudascale ! videorate drop-only=true skip-to-first=true",
+                "cudaupload ! cudaconvert ! cudascale ! videorate name=vrate drop-only=true skip-to-first=true",
                 true,
             )?
             .upcast());
         } else if feature.contains(GL_MEMORY_FEATURE) {
             return Ok(gst::parse_bin_from_description(
-                "glupload ! glcolorconvert ! glcolorscale ! videorate drop-only=true skip-to-first=true",
+                "glupload ! glcolorconvert ! glcolorscale ! videorate name=vrate drop-only=true skip-to-first=true",
                 true,
             )?
             .upcast());
@@ -320,7 +320,7 @@ fn make_converter_for_video_caps(caps: &gst::Caps) -> Result<gst::Element, Error
     }
 
     Ok(gst::parse_bin_from_description(
-        "videoconvert ! videoscale ! videorate drop-only=true skip-to-first=true",
+        "videoconvert ! videoscale ! videorate name=vrate drop-only=true skip-to-first=true",
         true,
     )?
     .upcast())
@@ -566,32 +566,36 @@ impl VideoEncoder {
 
         let current_caps = self.filter.property::<gst::Caps>("caps");
         let mut s = current_caps.structure(0).unwrap().to_owned();
+        let height;
+        let width;
+        let framerate;
 
         // Hardcoded thresholds, may be tuned further in the future, and
         // adapted according to the codec in use
         if bitrate < 500_000 {
-            let height = 360i32.min(self.video_info.height() as i32);
-            let width = self.scale_height_round_2(height);
+            height = 360i32.min(self.video_info.height() as i32);
+            width = self.scale_height_round_2(height);
+            framerate = self.halved_framerate;
 
             s.set("height", height);
             s.set("width", width);
-            s.set("framerate", self.halved_framerate);
 
             self.mitigation_mode =
                 WebRTCSinkMitigationMode::DOWNSAMPLED | WebRTCSinkMitigationMode::DOWNSCALED;
         } else if bitrate < 1_000_000 {
-            let height = 720i32.min(self.video_info.height() as i32);
-            let width = self.scale_height_round_2(height);
+            height = 720i32.min(self.video_info.height() as i32);
+            width = self.scale_height_round_2(height);
+            framerate = self.halved_framerate.mul(gst::Fraction::new(1, 2));
 
             s.set("height", height);
             s.set("width", width);
-            s.set("framerate", self.halved_framerate.mul(gst::Fraction::new(1, 2)));
 
             self.mitigation_mode =
                 WebRTCSinkMitigationMode::DOWNSAMPLED | WebRTCSinkMitigationMode::DOWNSCALED;
         } else if bitrate < 2_000_000 {
-            let height = 720i32.min(self.video_info.height() as i32);
-            let width = self.scale_height_round_2(height);
+            height = 720i32.min(self.video_info.height() as i32);
+            width = self.scale_height_round_2(height);
+            framerate = gst::Fraction::new(i32::MAX, 1);
 
             s.set("height", height);
             s.set("width", width);
@@ -600,9 +604,12 @@ impl VideoEncoder {
 
             self.mitigation_mode = WebRTCSinkMitigationMode::DOWNSCALED;
         } else {
+            height = self.video_info.height() as i32;
+            width = self.video_info.width() as i32;
+            framerate = gst::Fraction::new(i32::MAX, 1);
+
             s.remove_field("height");
             s.remove_field("width");
-            s.remove_field("framerate");
 
             self.mitigation_mode = WebRTCSinkMitigationMode::NONE;
         }
@@ -622,7 +629,21 @@ impl VideoEncoder {
                 self.element
             );
 
-            self.filter.set_property("caps", caps);
+            if framerate.numer() > 0 {
+                let pipeline = self.element.parent().expect("encoder is in a pipeline");
+
+                pipeline
+                    .downcast::<gst::Bin>()
+                    .unwrap()
+                    .by_name("vrate")
+                    .expect("pipeline has a vrate element")
+                    .set_property("max-rate", framerate.to_integer());
+            }
+
+            if height != self.video_info.height() as i32 || width != self.video_info.width() as i32
+            {
+                self.filter.set_property("caps", caps);
+            }
         }
     }
 
